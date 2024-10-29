@@ -1,8 +1,5 @@
-# requirements.txt
 streamlit==1.27.0
-selenium==4.11.2
+playwright==1.39.0
 beautifulsoup4==4.12.2
-webdriver-manager==4.0.0
 python-dotenv==1.0.0
 pandas==2.1.0
-undetected-chromedriver==3.5.3

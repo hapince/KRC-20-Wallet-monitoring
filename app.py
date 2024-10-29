@@ -16,45 +16,43 @@ KASPA_URL = "https://kasplex.org/Currency?address=kaspa:qr5ersqcxrpphkz24k389c9e
 REFRESH_INTERVAL = 60  # seconds
 
 # scraper.py
-import time
+import asyncio
 from typing import Dict
-import undetected_chromedriver as uc
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
+from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
 from config import KASPA_URL
 
 class TokenScraper:
     def __init__(self):
-        self.driver = None
+        self.browser = None
+        self.context = None
+        self.page = None
 
-    def start_driver(self):
-        if not self.driver:
-            options = uc.ChromeOptions()
-            options.add_argument('--headless')
-            options.add_argument('--no-sandbox')
-            options.add_argument('--disable-dev-shm-usage')
-            self.driver = uc.Chrome(options=options)
+    async def start_browser(self):
+        if not self.browser:
+            playwright = await async_playwright().start()
+            self.browser = await playwright.chromium.launch(headless=True)
+            self.context = await self.browser.new_context()
+            self.page = await self.context.new_page()
 
-    def stop_driver(self):
-        if self.driver:
-            self.driver.quit()
-            self.driver = None
+    async def stop_browser(self):
+        if self.browser:
+            await self.browser.close()
+            self.browser = None
+            self.context = None
+            self.page = None
 
-    def scrape_tokens(self) -> Dict[str, str]:
+    async def scrape_tokens(self) -> Dict[str, str]:
         try:
-            if not self.driver:
-                self.start_driver()
-            
-            self.driver.get(KASPA_URL)
+            if not self.browser:
+                await self.start_browser()
 
-            WebDriverWait(self.driver, 10).until(
-                EC.presence_of_element_located((By.CLASS_NAME, 'ant-table-tbody'))
-            )
-            time.sleep(3)
+            await self.page.goto(KASPA_URL)
+            await self.page.wait_for_selector('.ant-table-tbody')
+            await asyncio.sleep(3)  # Wait for dynamic content
 
-            soup = BeautifulSoup(self.driver.page_source, 'html.parser')
+            content = await self.page.content()
+            soup = BeautifulSoup(content, 'html.parser')
             tokens_table_body = soup.find('tbody', class_='ant-table-tbody')
             
             token_data = {}
@@ -110,12 +108,53 @@ class EmailHandler:
 
 # app.py
 import streamlit as st
-import time
+import asyncio
 from datetime import datetime
 import pandas as pd
 from scraper import TokenScraper
 from email_handler import EmailHandler
 from config import REFRESH_INTERVAL
+
+async def monitor_tokens(scraper, token_data_container, history_container):
+    try:
+        # Scrape token data
+        token_data = await scraper.scrape_tokens()
+        
+        if token_data:
+            # Update current data display
+            df_current = pd.DataFrame(
+                [[k, v] for k, v in token_data.items()],
+                columns=['Token', '数量']
+            )
+            token_data_container.dataframe(df_current, use_container_width=True)
+
+            # Add to history with timestamp
+            st.session_state.token_history.append({
+                'timestamp': datetime.now(),
+                'data': token_data
+            })
+
+            # Send email notification
+            EmailHandler.send_email(token_data)
+
+            # Display history
+            if st.session_state.token_history:
+                history_df = pd.DataFrame([
+                    {
+                        'Time': h['timestamp'],
+                        'Token': token,
+                        'Amount': h['data'].get(token)
+                    }
+                    for h in st.session_state.token_history
+                    for token in h['data'].keys()
+                ])
+                history_container.dataframe(
+                    history_df.sort_values('Time', ascending=False),
+                    use_container_width=True
+                )
+
+    except Exception as e:
+        st.error(f"Error occurred: {str(e)}")
 
 def main():
     st.set_page_config(page_title="KRC-20 Token Monitor", page_icon="📊")
@@ -135,7 +174,7 @@ def main():
         if st.button('开始监控' if not st.session_state.monitoring else '停止监控'):
             st.session_state.monitoring = not st.session_state.monitoring
             if not st.session_state.monitoring:
-                st.session_state.scraper.stop_driver()
+                asyncio.run(st.session_state.scraper.stop_browser())
 
     with col2:
         if st.button('清除历史'):
@@ -148,50 +187,10 @@ def main():
     token_data_container = st.empty()
     history_container = st.empty()
 
-    while st.session_state.monitoring:
-        try:
-            # Scrape token data
-            token_data = st.session_state.scraper.scrape_tokens()
-            
-            if token_data:
-                # Update current data display
-                df_current = pd.DataFrame(
-                    [[k, v] for k, v in token_data.items()],
-                    columns=['Token', '数量']
-                )
-                token_data_container.dataframe(df_current, use_container_width=True)
-
-                # Add to history with timestamp
-                st.session_state.token_history.append({
-                    'timestamp': datetime.now(),
-                    'data': token_data
-                })
-
-                # Send email notification
-                EmailHandler.send_email(token_data)
-
-                # Display history
-                if st.session_state.token_history:
-                    history_df = pd.DataFrame([
-                        {
-                            'Time': h['timestamp'],
-                            'Token': token,
-                            'Amount': h['data'].get(token)
-                        }
-                        for h in st.session_state.token_history
-                        for token in h['data'].keys()
-                    ])
-                    history_container.dataframe(
-                        history_df.sort_values('Time', ascending=False),
-                        use_container_width=True
-                    )
-
-        except Exception as e:
-            st.error(f"Error occurred: {str(e)}")
-            time.sleep(5)  # Wait before retrying
-            continue
-
-        time.sleep(REFRESH_INTERVAL)
+    if st.session_state.monitoring:
+        asyncio.run(monitor_tokens(st.session_state.scraper, token_data_container, history_container))
+        st.experimental_rerun()
 
 if __name__ == "__main__":
     main()
+
