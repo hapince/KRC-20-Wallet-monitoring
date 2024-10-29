@@ -1,3 +1,4 @@
 streamlit
-selenium
-webdriver-manager
+requests
+beautifulsoup4
+smtplib  # Standard library, no need to include this line unless a specific SMTP library is used
