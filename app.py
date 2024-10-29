@@ -7,12 +7,11 @@ load_dotenv()
 # Email configuration
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 465
-SENDER_EMAIL = os.getenv("SENDER_EMAIL", "happy.prince.max@gmail.com")
-RECEIVER_EMAIL = os.getenv("RECEIVER_EMAIL", "17300766401@163.com")
-EMAIL_PASSWORD = os.getenv("EMAIL_PASSWORD", "unpn umpg hvzg elxe")
+DEFAULT_SENDER_EMAIL = "happy.prince.max@gmail.com"
+DEFAULT_SENDER_PASSWORD = "unpn umpg hvzg elxe"
 
-# Monitoring configuration
-KASPA_URL = "https://kasplex.org/Currency?address=kaspa:qr5ersqcxrpphkz24k389c9ewtfeh007naglgfjztzr9rpgwv4gd52jj2dzfv"
+# Base URL
+BASE_URL = "https://kasplex.org/Currency?address="
 REFRESH_INTERVAL = 60  # seconds
 
 # scraper.py
@@ -20,7 +19,7 @@ import asyncio
 from typing import Dict
 from playwright.async_api import async_playwright
 from bs4 import BeautifulSoup
-from config import KASPA_URL
+from config import BASE_URL
 
 class TokenScraper:
     def __init__(self):
@@ -42,12 +41,13 @@ class TokenScraper:
             self.context = None
             self.page = None
 
-    async def scrape_tokens(self) -> Dict[str, str]:
+    async def scrape_tokens(self, wallet_address: str) -> Dict[str, str]:
         try:
             if not self.browser:
                 await self.start_browser()
 
-            await self.page.goto(KASPA_URL)
+            url = f"{BASE_URL}{wallet_address}"
+            await self.page.goto(url)
             await self.page.wait_for_selector('.ant-table-tbody')
             await asyncio.sleep(3)  # Wait for dynamic content
 
@@ -73,11 +73,11 @@ class TokenScraper:
 import smtplib
 from email.mime.text import MIMEText
 from typing import Dict
-from config import SMTP_SERVER, SMTP_PORT, SENDER_EMAIL, RECEIVER_EMAIL, EMAIL_PASSWORD
+from config import SMTP_SERVER, SMTP_PORT
 
 class EmailHandler:
     @staticmethod
-    def send_email(token_data: Dict[str, str]) -> bool:
+    def send_email(token_data: Dict[str, str], sender_email: str, sender_password: str, receiver_email: str) -> bool:
         try:
             html_content = """
             <h2>KRC-20 Token 监控通知</h2>
@@ -94,12 +94,12 @@ class EmailHandler:
 
             msg = MIMEText(html_content, "html")
             msg['Subject'] = 'KRC-20 Token 监控通知'
-            msg['From'] = SENDER_EMAIL
-            msg['To'] = RECEIVER_EMAIL
+            msg['From'] = sender_email
+            msg['To'] = receiver_email
 
             with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-                server.login(SENDER_EMAIL, EMAIL_PASSWORD)
-                server.sendmail(SENDER_EMAIL, RECEIVER_EMAIL, msg.as_string())
+                server.login(sender_email, sender_password)
+                server.sendmail(sender_email, receiver_email, msg.as_string())
             return True
 
         except Exception as e:
@@ -113,56 +113,111 @@ from datetime import datetime
 import pandas as pd
 from scraper import TokenScraper
 from email_handler import EmailHandler
-from config import REFRESH_INTERVAL
+from config import REFRESH_INTERVAL, DEFAULT_SENDER_EMAIL, DEFAULT_SENDER_PASSWORD
+import json
 
-async def monitor_tokens(scraper, token_data_container, history_container):
+def load_settings():
     try:
-        # Scrape token data
-        token_data = await scraper.scrape_tokens()
+        with open('settings.json', 'r') as f:
+            return json.load(f)
+    except:
+        return {
+            'wallet_addresses': [],
+            'receiver_email': '',
+            'sender_email': DEFAULT_SENDER_EMAIL,
+            'sender_password': DEFAULT_SENDER_PASSWORD
+        }
+
+def save_settings(settings):
+    with open('settings.json', 'w') as f:
+        json.dump(settings, f)
+
+async def monitor_tokens(scraper, wallet_address, token_data_container, history_container, email_settings):
+    try:
+        token_data = await scraper.scrape_tokens(wallet_address)
         
         if token_data:
             # Update current data display
+            current_time = datetime.now()
             df_current = pd.DataFrame(
-                [[k, v] for k, v in token_data.items()],
-                columns=['Token', '数量']
+                [[k, v, wallet_address, current_time] for k, v in token_data.items()],
+                columns=['Token', '数量', '钱包地址', '时间']
             )
             token_data_container.dataframe(df_current, use_container_width=True)
 
-            # Add to history with timestamp
-            st.session_state.token_history.append({
-                'timestamp': datetime.now(),
-                'data': token_data
-            })
+            # Add to history
+            if 'token_history' not in st.session_state:
+                st.session_state.token_history = []
+            
+            st.session_state.token_history.extend([
+                {
+                    'timestamp': current_time,
+                    'wallet': wallet_address,
+                    'token': token,
+                    'amount': amount
+                }
+                for token, amount in token_data.items()
+            ])
 
-            # Send email notification
-            EmailHandler.send_email(token_data)
+            # Send email if configured
+            if all(email_settings.values()):
+                EmailHandler.send_email(
+                    token_data,
+                    email_settings['sender_email'],
+                    email_settings['sender_password'],
+                    email_settings['receiver_email']
+                )
 
             # Display history
             if st.session_state.token_history:
-                history_df = pd.DataFrame([
-                    {
-                        'Time': h['timestamp'],
-                        'Token': token,
-                        'Amount': h['data'].get(token)
-                    }
-                    for h in st.session_state.token_history
-                    for token in h['data'].keys()
-                ])
-                history_container.dataframe(
-                    history_df.sort_values('Time', ascending=False),
-                    use_container_width=True
-                )
+                history_df = pd.DataFrame(st.session_state.token_history)
+                history_df = history_df.sort_values('timestamp', ascending=False)
+                history_container.dataframe(history_df, use_container_width=True)
 
     except Exception as e:
         st.error(f"Error occurred: {str(e)}")
 
 def main():
-    st.set_page_config(page_title="KRC-20 Token Monitor", page_icon="📊")
+    st.set_page_config(page_title="KRC-20 Token Monitor", page_icon="📊", layout="wide")
     st.title("KRC-20 Token Monitor")
 
+    # Load saved settings
+    settings = load_settings()
+
+    # Sidebar for settings
+    with st.sidebar:
+        st.header("监控设置")
+        
+        # Wallet management
+        st.subheader("钱包地址管理")
+        new_wallet = st.text_input("添加新钱包地址")
+        if st.button("添加钱包"):
+            if new_wallet and new_wallet not in settings['wallet_addresses']:
+                settings['wallet_addresses'].append(new_wallet)
+                save_settings(settings)
+
+        # Display and allow removal of existing wallets
+        for wallet in settings['wallet_addresses']:
+            col1, col2 = st.columns([3, 1])
+            with col1:
+                st.text(wallet)
+            with col2:
+                if st.button("删除", key=f"del_{wallet}"):
+                    settings['wallet_addresses'].remove(wallet)
+                    save_settings(settings)
+                    st.experimental_rerun()
+
+        # Email settings
+        st.subheader("邮件设置")
+        settings['receiver_email'] = st.text_input("接收邮箱", settings['receiver_email'])
+        settings['sender_email'] = st.text_input("发送邮箱", settings['sender_email'])
+        settings['sender_password'] = st.text_input("邮箱密码", settings['sender_password'], type="password")
+        
+        if st.button("保存设置"):
+            save_settings(settings)
+            st.success("设置已保存！")
+
     # Initialize session state
-    if 'token_history' not in st.session_state:
-        st.session_state.token_history = []
     if 'monitoring' not in st.session_state:
         st.session_state.monitoring = False
     if 'scraper' not in st.session_state:
@@ -183,12 +238,24 @@ def main():
     # Display current status
     st.write(f"监控状态: {'运行中' if st.session_state.monitoring else '已停止'}")
 
-    # Create placeholder for live data
+    # Create containers for data display
     token_data_container = st.empty()
     history_container = st.empty()
 
-    if st.session_state.monitoring:
-        asyncio.run(monitor_tokens(st.session_state.scraper, token_data_container, history_container))
+    # Monitor all configured wallets
+    if st.session_state.monitoring and settings['wallet_addresses']:
+        for wallet in settings['wallet_addresses']:
+            asyncio.run(monitor_tokens(
+                st.session_state.scraper,
+                wallet,
+                token_data_container,
+                history_container,
+                {
+                    'sender_email': settings['sender_email'],
+                    'sender_password': settings['sender_password'],
+                    'receiver_email': settings['receiver_email']
+                }
+            ))
         st.experimental_rerun()
 
 if __name__ == "__main__":
