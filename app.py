@@ -18,10 +18,7 @@ REFRESH_INTERVAL = 60  # seconds
 # scraper.py
 import time
 from typing import Dict
-from selenium import webdriver
-from selenium.webdriver.chrome.service import Service
-from webdriver_manager.chrome import ChromeDriverManager
-from selenium.webdriver.chrome.options import Options
+import undetected_chromedriver as uc
 from selenium.webdriver.common.by import By
 from selenium.webdriver.support.ui import WebDriverWait
 from selenium.webdriver.support import expected_conditions as EC
@@ -30,18 +27,15 @@ from config import KASPA_URL
 
 class TokenScraper:
     def __init__(self):
-        self.options = Options()
-        self.options.add_argument("--headless")
-        self.options.add_argument("--disable-gpu")
-        self.options.add_argument("--no-sandbox")
         self.driver = None
 
     def start_driver(self):
         if not self.driver:
-            self.driver = webdriver.Chrome(
-                service=Service(ChromeDriverManager().install()),
-                options=self.options
-            )
+            options = uc.ChromeOptions()
+            options.add_argument('--headless')
+            options.add_argument('--no-sandbox')
+            options.add_argument('--disable-dev-shm-usage')
+            self.driver = uc.Chrome(options=options)
 
     def stop_driver(self):
         if self.driver:
@@ -50,7 +44,9 @@ class TokenScraper:
 
     def scrape_tokens(self) -> Dict[str, str]:
         try:
-            self.start_driver()
+            if not self.driver:
+                self.start_driver()
+            
             self.driver.get(KASPA_URL)
 
             WebDriverWait(self.driver, 10).until(
@@ -153,44 +149,49 @@ def main():
     history_container = st.empty()
 
     while st.session_state.monitoring:
-        # Scrape token data
-        token_data = st.session_state.scraper.scrape_tokens()
-        
-        if token_data:
-            # Update current data display
-            df_current = pd.DataFrame(
-                [[k, v] for k, v in token_data.items()],
-                columns=['Token', '数量']
-            )
-            token_data_container.dataframe(df_current, use_container_width=True)
-
-            # Add to history with timestamp
-            st.session_state.token_history.append({
-                'timestamp': datetime.now(),
-                'data': token_data
-            })
-
-            # Send email notification
-            EmailHandler.send_email(token_data)
-
-            # Display history
-            if st.session_state.token_history:
-                history_df = pd.DataFrame([
-                    {
-                        'Time': h['timestamp'],
-                        'Token': token,
-                        'Amount': h['data'].get(token)
-                    }
-                    for h in st.session_state.token_history
-                    for token in h['data'].keys()
-                ])
-                history_container.dataframe(
-                    history_df.sort_values('Time', ascending=False),
-                    use_container_width=True
+        try:
+            # Scrape token data
+            token_data = st.session_state.scraper.scrape_tokens()
+            
+            if token_data:
+                # Update current data display
+                df_current = pd.DataFrame(
+                    [[k, v] for k, v in token_data.items()],
+                    columns=['Token', '数量']
                 )
+                token_data_container.dataframe(df_current, use_container_width=True)
+
+                # Add to history with timestamp
+                st.session_state.token_history.append({
+                    'timestamp': datetime.now(),
+                    'data': token_data
+                })
+
+                # Send email notification
+                EmailHandler.send_email(token_data)
+
+                # Display history
+                if st.session_state.token_history:
+                    history_df = pd.DataFrame([
+                        {
+                            'Time': h['timestamp'],
+                            'Token': token,
+                            'Amount': h['data'].get(token)
+                        }
+                        for h in st.session_state.token_history
+                        for token in h['data'].keys()
+                    ])
+                    history_container.dataframe(
+                        history_df.sort_values('Time', ascending=False),
+                        use_container_width=True
+                    )
+
+        except Exception as e:
+            st.error(f"Error occurred: {str(e)}")
+            time.sleep(5)  # Wait before retrying
+            continue
 
         time.sleep(REFRESH_INTERVAL)
 
 if __name__ == "__main__":
     main()
-
