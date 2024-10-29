@@ -1,4 +1,3 @@
-streamlit==1.22.0
-selenium==4.18.1
-webdriver-manager==3.8.5
-beautifulsoup4==4.12.2
+streamlit
+selenium
+webdriver-manager
