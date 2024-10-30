@@ -1,263 +1,134 @@
-# config.py
-import os
-from dotenv import load_dotenv
-
-load_dotenv()
-
-# Email configuration
-SMTP_SERVER = "smtp.gmail.com"
-SMTP_PORT = 465
-DEFAULT_SENDER_EMAIL = "happy.prince.max@gmail.com"
-DEFAULT_SENDER_PASSWORD = "unpn umpg hvzg elxe"
-
-# Base URL
-BASE_URL = "https://kasplex.org/Currency?address="
-REFRESH_INTERVAL = 60  # seconds
-
-# scraper.py
-import asyncio
-from typing import Dict
-from playwright.async_api import async_playwright
-from bs4 import BeautifulSoup
-from config import BASE_URL
-
-class TokenScraper:
-    def __init__(self):
-        self.browser = None
-        self.context = None
-        self.page = None
-
-    async def start_browser(self):
-        if not self.browser:
-            playwright = await async_playwright().start()
-            self.browser = await playwright.chromium.launch(headless=True)
-            self.context = await self.browser.new_context()
-            self.page = await self.context.new_page()
-
-    async def stop_browser(self):
-        if self.browser:
-            await self.browser.close()
-            self.browser = None
-            self.context = None
-            self.page = None
-
-    async def scrape_tokens(self, wallet_address: str) -> Dict[str, str]:
-        try:
-            if not self.browser:
-                await self.start_browser()
-
-            url = f"{BASE_URL}{wallet_address}"
-            await self.page.goto(url)
-            await self.page.wait_for_selector('.ant-table-tbody')
-            await asyncio.sleep(3)  # Wait for dynamic content
-
-            content = await self.page.content()
-            soup = BeautifulSoup(content, 'html.parser')
-            tokens_table_body = soup.find('tbody', class_='ant-table-tbody')
-            
-            token_data = {}
-            if tokens_table_body:
-                for row in tokens_table_body.find_all('tr', class_='ant-table-row ant-table-row-level-0'):
-                    token_name_with_span = row.find('td', class_='ant-table-cell searchCell').get_text(strip=True)
-                    token_name = token_name_with_span.split('Fair Mint')[0].strip()
-                    token_amount = row.find_all('td', class_='ant-table-cell deployTime')[1].get_text(strip=True)
-                    token_data[token_name] = token_amount
-
-            return token_data
-
-        except Exception as e:
-            print(f"Scraping error: {e}")
-            return {}
-
-# email_handler.py
+import time
 import smtplib
 from email.mime.text import MIMEText
-from typing import Dict
-from config import SMTP_SERVER, SMTP_PORT
+from selenium import webdriver
+from selenium.webdriver.chrome.service import Service
+from webdriver_manager.chrome import ChromeDriverManager
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from bs4 import BeautifulSoup
+import tkinter as tk
+from tkinter import scrolledtext
+import threading
 
-class EmailHandler:
-    @staticmethod
-    def send_email(token_data: Dict[str, str], sender_email: str, sender_password: str, receiver_email: str) -> bool:
-        try:
-            html_content = """
-            <h2>KRC-20 Token 监控通知</h2>
-            <table border='1'>
-                <tr>
-                    <th>Token 名称</th>
-                    <th>数量</th>
-                </tr>
-            """
-            
-            for token, amount in token_data.items():
-                html_content += f"<tr><td>{token}</td><td>{amount}</td></tr>"
-            html_content += "</table>"
+# Tkinter UI setup
+root = tk.Tk()
+root.title("TRC20 钱包监控")
 
-            msg = MIMEText(html_content, "html")
-            msg['Subject'] = 'KRC-20 Token 监控通知'
-            msg['From'] = sender_email
-            msg['To'] = receiver_email
+tk.Label(root, text="指定地址:").grid(row=0, column=0)
+address_entry = tk.Entry(root, width=50)
+address_entry.grid(row=0, column=1)
 
-            with smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT) as server:
-                server.login(sender_email, sender_password)
-                server.sendmail(sender_email, receiver_email, msg.as_string())
-            return True
+tk.Label(root, text="接收邮箱:").grid(row=1, column=0)
+receiver_email_entry = tk.Entry(root, width=50)
+receiver_email_entry.grid(row=1, column=1)
 
-        except Exception as e:
-            print(f"Email error: {e}")
-            return False
+output_text = scrolledtext.ScrolledText(root, width=70, height=20)
+output_text.grid(row=3, columnspan=2)
 
-# app.py
-import streamlit as st
-import asyncio
-from datetime import datetime
-import pandas as pd
-from scraper import TokenScraper
-from email_handler import EmailHandler
-from config import REFRESH_INTERVAL, DEFAULT_SENDER_EMAIL, DEFAULT_SENDER_PASSWORD
-import json
+smtp_server = "smtp.gmail.com"
+smtp_port = 465
+sender_email = "happy.prince.max@gmail.com" #填自己的邮箱 
+password = "******"    #去谷歌申请一个密码
 
-def load_settings():
+options = Options()
+options.add_argument("--headless")
+options.add_argument("--disable-gpu")
+options.add_argument("--no-sandbox")
+
+# 启动Chrome浏览器
+driver = webdriver.Chrome(service=Service(ChromeDriverManager().install()), options=options)
+
+def send_email(token_data, receiver_email):
     try:
-        with open('settings.json', 'r') as f:
-            return json.load(f)
-    except:
-        return {
-            'wallet_addresses': [],
-            'receiver_email': '',
-            'sender_email': DEFAULT_SENDER_EMAIL,
-            'sender_password': DEFAULT_SENDER_PASSWORD
-        }
+        html_content = "<h2>KRC-20 Token 监控通知</h2><table border='1'><tr><th>Token 名称</th><th>数量</th></tr>"
+        for token, amount in token_data.items():
+            html_content += f"<tr><td>{token}</td><td>{amount}</td></tr>"
+        html_content += "</table>"
 
-def save_settings(settings):
-    with open('settings.json', 'w') as f:
-        json.dump(settings, f)
+        msg = MIMEText(html_content, "html")
+        msg['Subject'] = 'KRC-20 Token 监控通知'
+        msg['From'] = sender_email
+        msg['To'] = receiver_email
 
-async def monitor_tokens(scraper, wallet_address, token_data_container, history_container, email_settings):
-    try:
-        token_data = await scraper.scrape_tokens(wallet_address)
-        
-        if token_data:
-            # Update current data display
-            current_time = datetime.now()
-            df_current = pd.DataFrame(
-                [[k, v, wallet_address, current_time] for k, v in token_data.items()],
-                columns=['Token', '数量', '钱包地址', '时间']
-            )
-            token_data_container.dataframe(df_current, use_container_width=True)
+        with smtplib.SMTP_SSL(smtp_server, smtp_port) as server:
+            server.login(sender_email, password)
+            server.sendmail(sender_email, receiver_email, msg.as_string())
+        print("邮件发送成功")
+    except Exception as e:
+        print(f"发送邮件时出错: {e}")
 
-            # Add to history
-            if 'token_history' not in st.session_state:
-                st.session_state.token_history = []
-            
-            st.session_state.token_history.extend([
-                {
-                    'timestamp': current_time,
-                    'wallet': wallet_address,
-                    'token': token,
-                    'amount': amount
-                }
-                for token, amount in token_data.items()
-            ])
+def scrape_tokens(address, receiver_email):
+    url = f"https://kasplex.org/Currency?address={address}"
+    driver.get(url)
 
-            # Send email if configured
-            if all(email_settings.values()):
-                EmailHandler.send_email(
-                    token_data,
-                    email_settings['sender_email'],
-                    email_settings['sender_password'],
-                    email_settings['receiver_email']
-                )
+    try: 
+        WebDriverWait(driver, 10).until(
+            EC.presence_of_element_located((By.CLASS_NAME, 'ant-table-tbody'))
+        )
+        time.sleep(3)
 
-            # Display history
-            if st.session_state.token_history:
-                history_df = pd.DataFrame(st.session_state.token_history)
-                history_df = history_df.sort_values('timestamp', ascending=False)
-                history_container.dataframe(history_df, use_container_width=True)
+        soup = BeautifulSoup(driver.page_source, 'html.parser')
+        tokens_table_body = soup.find('tbody', class_='ant-table-tbody')
+
+        if tokens_table_body:
+            token_data = {}
+            for row in tokens_table_body.find_all('tr', class_='ant-table-row ant-table-row-level-0'):
+                token_name_with_span = row.find('td', class_='ant-table-cell searchCell').get_text(strip=True)
+                token_name = token_name_with_span.split('Fair Mint')[0].strip()
+                token_amount_str = row.find_all('td', class_='ant-table-cell deployTime')[1].get_text(strip=True)
+
+                # 调试信息，打印原始抓取的数量
+                print(f"原始数量: {token_amount_str}")
+
+                # 去掉非数字字符
+                token_amount_str = ''.join(filter(str.isdigit, token_amount_str))
+
+                # 转换数量并减去 7 个零
+                try:
+                    if token_amount_str:  # 确保字符串不为空
+                        token_amount = int(token_amount_str) / 10**8
+                    else:
+                        token_amount = 0  # 如果没有有效的数量，设置为 0
+                except ValueError:
+                    token_amount = token_amount_str  # 如果转换失败，保留原字符串
+
+                # 调试信息，打印处理后的数量
+                print(f"处理后的数量: {token_amount}")
+
+                token_data[token_name] = token_amount
+            send_email(token_data, receiver_email)
+            output_text.insert(tk.END, f"{time.strftime('%Y-%m-%d %H:%M:%S')} - 抓取的铭文: {token_data}\n")
+            output_text.yview(tk.END)
+
+        else:
+            print("没找到")
+            output_text.insert(tk.END, "没找到\n")
 
     except Exception as e:
-        st.error(f"Error occurred: {str(e)}")
+        print(f"发生错误: {e}")
 
-def main():
-    st.set_page_config(page_title="KRC-20 Token Monitor", page_icon="📊", layout="wide")
-    st.title("KRC-20 Token Monitor")
+def start_monitoring():
+    address = address_entry.get()
+    receiver_email = receiver_email_entry.get()
+    
+    # 运行抓取过程
+    while True:
+        scrape_tokens(address, receiver_email)
+        time.sleep(60)
 
-    # Load saved settings
-    settings = load_settings()
+def submit():
+    # 创建一个新线程来执行抓取
+    thread = threading.Thread(target=start_monitoring, daemon=True)
+    thread.start()
 
-    # Sidebar for settings
-    with st.sidebar:
-        st.header("监控设置")
-        
-        # Wallet management
-        st.subheader("钱包地址管理")
-        new_wallet = st.text_input("添加新钱包地址")
-        if st.button("添加钱包"):
-            if new_wallet and new_wallet not in settings['wallet_addresses']:
-                settings['wallet_addresses'].append(new_wallet)
-                save_settings(settings)
+# 添加提交按钮
+submit_button = tk.Button(root, text="提交", command=submit)
+submit_button.grid(row=2, columnspan=2)
 
-        # Display and allow removal of existing wallets
-        for wallet in settings['wallet_addresses']:
-            col1, col2 = st.columns([3, 1])
-            with col1:
-                st.text(wallet)
-            with col2:
-                if st.button("删除", key=f"del_{wallet}"):
-                    settings['wallet_addresses'].remove(wallet)
-                    save_settings(settings)
-                    st.experimental_rerun()
+root.mainloop()
 
-        # Email settings
-        st.subheader("邮件设置")
-        settings['receiver_email'] = st.text_input("接收邮箱", settings['receiver_email'])
-        settings['sender_email'] = st.text_input("发送邮箱", settings['sender_email'])
-        settings['sender_password'] = st.text_input("邮箱密码", settings['sender_password'], type="password")
-        
-        if st.button("保存设置"):
-            save_settings(settings)
-            st.success("设置已保存！")
-
-    # Initialize session state
-    if 'monitoring' not in st.session_state:
-        st.session_state.monitoring = False
-    if 'scraper' not in st.session_state:
-        st.session_state.scraper = TokenScraper()
-
-    # Control buttons
-    col1, col2 = st.columns(2)
-    with col1:
-        if st.button('开始监控' if not st.session_state.monitoring else '停止监控'):
-            st.session_state.monitoring = not st.session_state.monitoring
-            if not st.session_state.monitoring:
-                asyncio.run(st.session_state.scraper.stop_browser())
-
-    with col2:
-        if st.button('清除历史'):
-            st.session_state.token_history = []
-
-    # Display current status
-    st.write(f"监控状态: {'运行中' if st.session_state.monitoring else '已停止'}")
-
-    # Create containers for data display
-    token_data_container = st.empty()
-    history_container = st.empty()
-
-    # Monitor all configured wallets
-    if st.session_state.monitoring and settings['wallet_addresses']:
-        for wallet in settings['wallet_addresses']:
-            asyncio.run(monitor_tokens(
-                st.session_state.scraper,
-                wallet,
-                token_data_container,
-                history_container,
-                {
-                    'sender_email': settings['sender_email'],
-                    'sender_password': settings['sender_password'],
-                    'receiver_email': settings['receiver_email']
-                }
-            ))
-        st.experimental_rerun()
-
-if __name__ == "__main__":
-    main()
-
+# Clean up
+driver.quit()
